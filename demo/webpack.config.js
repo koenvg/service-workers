@@ -34,7 +34,7 @@ module.exports = {
     new ServiceWorkerPlugin(DEFAULT_SW_CONFIG, {
       withCache: Object.assign({}, DEFAULT_SW_CONFIG, {
         cache: {
-          offline: true,
+          appShell: '/?key=withCache',
           precache: [
             '.*\\.js$'
           ],

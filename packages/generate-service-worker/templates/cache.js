@@ -1,7 +1,7 @@
 /*         -------- CACHE ---------         */
 
 const CURRENT_CACHE = `SW_CACHE:${$VERSION}`;
-const APP_SHELL_CACHE = 'SW_APP_SHELL';
+const APP_SHELL_CACHE_KEY = '<SW_APP_SHELL_KEY>';
 
 const isValidResponse = res => (res.ok || (res.status === 0 && res.type === 'opaque'));
 const isNavigation = req => req.mode === 'navigate' || (req.method === 'GET' && req.headers.get('accept').includes('text/html'));
@@ -10,7 +10,7 @@ const isNavigation = req => req.mode === 'navigate' || (req.method === 'GET' && 
 
 self.addEventListener('install', handleInstall);
 self.addEventListener('activate', handleActivate);
-if ($Cache.precache || $Cache.offline || $Cache.strategy) {
+if ($Cache.precache || $Cache.appShell || $Cache.strategy) {
   self.addEventListener('fetch', handleFetch);
 }
 
@@ -19,7 +19,7 @@ if ($Cache.precache || $Cache.offline || $Cache.strategy) {
 function handleInstall(event) {
   logger.log('Entering install handler.');
   self.skipWaiting();
-  if ($Cache.precache) {
+  if ($Cache.precache || $Cache.appShell) {
     event.waitUntil(precache());
   }
 }
@@ -41,11 +41,14 @@ function handleActivate(event) {
 
 function handleFetch(event) {
   if (isNavigation(event.request)) {
-    if ($Cache.offline) {
+    if ($Cache.appShell) {
+      const loggingGroup = 'App shell';
+      logger.group(loggingGroup);
       event.respondWith(
-        fetchAndCacheAppShell(event.request)
-          .catch(() => caches.match(APP_SHELL_CACHE))
-          .catch(() => undefined)
+        fetchAndCacheAppShell(event.request, loggingGroup).then(response => {
+          logger.groupEnd(loggingGroup);
+          return response;
+        })
       );
     }
   } else if (event.request.method === 'GET') {
@@ -81,20 +84,20 @@ function applyEventStrategy(strategy, event) {
   }
 }
 
-function insertInCache(request, response) {
-  logger.log('Inserting in cache.', request.url);
+function insertInCache(request, response, loggingGroup) {
+  logger.log('Inserting in cache.', loggingGroup || request.url);
   return caches.open(CURRENT_CACHE)
     .then(cache => cache.put(request, response));
 }
 
-function getFromCache(request) {
+function getFromCache(request, loggingGroup) {
   return () => {
     return caches.match(request).then(response => {
       if (response) {
-        logger.log('Found entry in cache.', request.url);
+        logger.log('Found entry in cache.', loggingGroup || request.url);
         return response;
       }
-      logger.log('No entry found in cache.', request.url);
+      logger.log('No entry found in cache.', loggingGroup || request.url);
       throw new Error(`No cache entry found for ${request.url}`);
     });
   };
@@ -127,14 +130,15 @@ function fetchAndCache(request) {
   };
 }
 
-function fetchAndCacheAppShell(request) {
-  return fetch(request).then(response => {
-    if (isValidResponse(response)) {
-      logger.log('Caching app shell.', request.url);
-      insertInCache(APP_SHELL_CACHE, response.clone());
-    }
-    return response;
-  });
+function fetchAndCacheAppShell(request, loggingGroup) {
+  return getFromCache(APP_SHELL_CACHE_KEY, loggingGroup)()
+    .catch(() => fetch(request).then(response => {
+      if (isValidResponse(response)) {
+        logger.log('Caching app shell.', 'App shell');
+        insertInCache(APP_SHELL_CACHE_KEY, response.clone(), loggingGroup);
+      }
+      return response;
+    }));
 }
 
 function fallbackToCache(request) {
@@ -175,24 +179,46 @@ function getFromFastest(request, strategy) {
   });
 }
 
+function buildCacheBustingRequest(url) {
+  const cacheBustedUrl = new URL(url, location.href);
+  cacheBustedUrl.search += (cacheBustedUrl.search ? '&' : '?') + `cache-bust=${Date.now()}`;
+  return new Request(cacheBustedUrl, { mode: 'no-cors' });
+}
+
 function precache() {
   logger.group('precaching');
   return caches.open(CURRENT_CACHE).then(cache => {
-    return Promise.all(
-      $Cache.precache.map(urlToPrefetch => {
-        logger.log(urlToPrefetch, 'precaching');
-        const cacheBustedUrl = new URL(urlToPrefetch, location.href);
-        cacheBustedUrl.search += (cacheBustedUrl.search ? '&' : '?') + `cache-bust=${Date.now()}`;
+    let precacheFetches = Promise.resolve();
+    let appShellFetch = Promise.resolve();
 
-        const request = new Request(cacheBustedUrl, { mode: 'no-cors' });
-        return fetch(request).then(response => {
-          if (!isValidResponse(response)) {
-            logger.error(`Failed for ${urlToPrefetch}.`, 'precaching');
-            return undefined;
-          }
-          return cache.put(urlToPrefetch, response);
-        });
-      })
-    );
+    if ($Cache.precache) {
+      precacheFetches = Promise.all(
+        $Cache.precache.map(urlToPrefetch => {
+          logger.log(urlToPrefetch, 'precaching');
+          const request = buildCacheBustingRequest(urlToPrefetch);
+          return fetch(request).then(response => {
+            if (!isValidResponse(response)) {
+              logger.error(`Failed for ${urlToPrefetch}.`, 'precaching');
+              return undefined;
+            }
+            return cache.put(urlToPrefetch, response);
+          });
+        })
+      );
+    }
+
+    if ($Cache.appShell) {
+      const request = buildCacheBustingRequest($Cache.appShell);
+      appShellFetch = fetch(request).then(response => {
+        logger.log(`${$Cache.appShell} -- App shell`, 'precaching');
+        if (!isValidResponse(response)) {
+          logger.error('App shell precache failed.', 'precaching');
+          return undefined;
+        }
+        return cache.put(APP_SHELL_CACHE_KEY, response);
+      });
+    }
+
+    return Promise.all([precacheFetches, appShellFetch]);
   }).then(() => logger.groupEnd('precaching'));
 }

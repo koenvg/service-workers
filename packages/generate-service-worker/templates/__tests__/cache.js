@@ -43,33 +43,21 @@ describe('[generate-service-worker/templates] cache', function test() {
 
   describe('[offline]', () => {
     beforeEach(() => {
-      global.$Cache.offline = true;
+      global.$Cache.appShell = true;
       require('../cache');
     });
 
-    it('should return the precached response if offline', async () => {
+    it('should return the app shell if it exists', async () => {
       // Fill cache with item
       const cachedHtml = '<html>Hi</html>';
       const cache = await self.caches.open(CURRENT_CACHE);
-      await cache.put('SW_APP_SHELL', cachedHtml);
-
-      // Go offline
-      global.fetch.mockImplementation(() => {
-        return new Promise(() => {
-          throw new Error('offline');
-        });
-      });
+      await cache.put('<SW_APP_SHELL_KEY>', cachedHtml);
 
       const response = await self.trigger('fetch', Request({ mode: 'navigate' }));
       expect(response).toEqual(cachedHtml);
     });
 
-    it('should return the fetched response if online', async () => {
-      // Fill cache with item
-      const cachedHtml = '<html>Hi</html>';
-      const cache = await self.caches.open(CURRENT_CACHE);
-      await cache.put('SW_APP_SHELL', cachedHtml);
-
+    it('should fetch the app shell if it does not exist', async () => {
       global.fetch.mockImplementation(() => Promise.resolve(runtimeResponse));
 
       const response = await self.trigger('fetch', Request({ mode: 'navigate' }));
